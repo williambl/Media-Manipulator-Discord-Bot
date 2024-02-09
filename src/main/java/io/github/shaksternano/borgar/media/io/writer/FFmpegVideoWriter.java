@@ -3,14 +3,20 @@ package io.github.shaksternano.borgar.media.io.writer;
 import io.github.shaksternano.borgar.media.AudioFrame;
 import io.github.shaksternano.borgar.media.ImageFrame;
 import io.github.shaksternano.borgar.media.ImageUtil;
+import io.github.shaksternano.borgar.media.MediaUtil;
 import org.bytedeco.ffmpeg.global.avcodec;
 import org.bytedeco.javacv.FFmpegFrameRecorder;
+import org.bytedeco.javacv.Frame;
 import org.bytedeco.javacv.Java2DFrameConverter;
 import org.jetbrains.annotations.Nullable;
 
 import java.awt.image.BufferedImage;
 import java.io.File;
 import java.io.IOException;
+import java.util.ArrayDeque;
+import java.util.Deque;
+import java.util.Queue;
+import java.util.concurrent.CompletableFuture;
 
 public class FFmpegVideoWriter implements MediaWriter {
 
@@ -20,6 +26,8 @@ public class FFmpegVideoWriter implements MediaWriter {
     @Nullable
     private FFmpegFrameRecorder recorder;
     private final Java2DFrameConverter converter = new Java2DFrameConverter();
+    private final Deque<ProcessingFrame<BufferedImage, Frame>> imageFramesWaiting = new ArrayDeque<>();
+    private final Deque<Frame> audioFramesWaiting = new ArrayDeque<>();
     private final File output;
     private final String outputFormat;
     private final int audioChannels;
@@ -72,7 +80,10 @@ public class FFmpegVideoWriter implements MediaWriter {
             );
             recorder.start();
         }
-        recorder.record(converter.convert(image));
+        imageFramesWaiting.add(new ProcessingFrame<>(image, CompletableFuture.supplyAsync(() -> converter.convert(image))));
+        while (imageFramesWaiting.peek() != null && imageFramesWaiting.peek().converted().isDone()) {
+            recorder.record(imageFramesWaiting.pop().converted().join());
+        }
     }
 
     @Override
@@ -82,7 +93,7 @@ public class FFmpegVideoWriter implements MediaWriter {
         }
         // Prevent errors from occurring when the frame rate is too high.
         if (recorder.getFrameRate() <= MAX_AUDIO_FRAME_RATE) {
-            recorder.record(frame.content());
+            audioFramesWaiting.add(frame.content());
         }
     }
 
@@ -102,6 +113,12 @@ public class FFmpegVideoWriter implements MediaWriter {
             return;
         }
         closed = true;
+        while (!imageFramesWaiting.isEmpty()) {
+            recorder.record(imageFramesWaiting.pop().converted().join());
+        }
+        while (!audioFramesWaiting.isEmpty()) {
+            recorder.record(audioFramesWaiting.pop());
+        }
         if (recorder != null) {
             recorder.close();
         }
@@ -202,4 +219,6 @@ public class FFmpegVideoWriter implements MediaWriter {
     private static long estimateFileSize(int bitrate, long durationMicros) {
         return (bitrate * durationMicros) / 8;
     }
+
+    private record ProcessingFrame<T, R>(T frame, CompletableFuture<R> converted) {}
 }
