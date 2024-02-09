@@ -3,6 +3,7 @@ package io.github.shaksternano.borgar.command;
 import com.google.common.collect.ListMultimap;
 import com.sksamuel.scrimage.AutocropOps;
 import com.sksamuel.scrimage.ImmutableImage;
+import com.sksamuel.scrimage.pixels.PixelTools;
 import com.sksamuel.scrimage.pixels.PixelsExtractor;
 import io.github.shaksternano.borgar.command.util.CommandParser;
 import io.github.shaksternano.borgar.io.NamedFile;
@@ -93,10 +94,10 @@ public class AutoCropCommand extends FileCommand {
             if (cropColor == null) {
                 cropColor = new Color(image.getRGB(0, 0), true);
             }
-            var x1F = CompletableFuture.supplyAsync(() -> AutocropOps.scanright(cropColor, height, width, 0, extractor, colorTolerance), mediaProcessingExecutor);
-            var x2F = CompletableFuture.supplyAsync(() -> AutocropOps.scanleft(cropColor, height, width - 1, extractor, colorTolerance), mediaProcessingExecutor);
-            var y1F = CompletableFuture.supplyAsync(() -> AutocropOps.scandown(cropColor, height, width, 0, extractor, colorTolerance), mediaProcessingExecutor);
-            var y2F = CompletableFuture.supplyAsync(() -> AutocropOps.scanup(cropColor, width, height - 1, extractor, colorTolerance), mediaProcessingExecutor);
+            var x1F = CompletableFuture.supplyAsync(() -> scanright(cropColor, height, width, 0, extractor, colorTolerance), mediaProcessingExecutor);
+            var x2F = CompletableFuture.supplyAsync(() -> scanleft(cropColor, height, width - 1, extractor, colorTolerance), mediaProcessingExecutor);
+            var y1F = CompletableFuture.supplyAsync(() -> scandown(cropColor, height, width, 0, extractor, colorTolerance), mediaProcessingExecutor);
+            var y2F = CompletableFuture.supplyAsync(() -> scanup(cropColor, width, height - 1, extractor, colorTolerance), mediaProcessingExecutor);
             CompletableFuture.allOf(x1F, x2F, y1F, y2F).join();
             var x1 = x1F.join();
             var x2 = x2F.join();
@@ -108,5 +109,43 @@ public class AutoCropCommand extends FileCommand {
                 return new Rectangle(x1, y1, x2 - x1, y2 - y1);
             }
         }
+    }
+
+    // faster versions of the functions from scrimage
+
+    public static int scanright(Color color, int height, int width, int col, PixelsExtractor f, int tolerance) {
+        Rectangle rect = new Rectangle(col, 0, 1, height);
+        while (col != width && PixelTools.colorMatches(color, tolerance, f.apply(rect))) {
+            rect.setBounds(++col, 0, 1, height);
+        }
+
+        return col;
+    }
+
+    public static int scanleft(Color color, int height, int col, PixelsExtractor f, int tolerance) {
+        Rectangle rect = new Rectangle(col, 0, 1, height);
+        while (col != 0 && PixelTools.colorMatches(color, tolerance, f.apply(rect))) {
+            rect.setBounds(--col, 0, 1, height);
+        }
+
+        return col;
+    }
+
+    public static int scandown(Color color, int height, int width, int row, PixelsExtractor f, int tolerance) {
+        Rectangle rect = new Rectangle(0, row, width, 1);
+        while (row != height && PixelTools.colorMatches(color, tolerance, f.apply(rect))) {
+            rect.setBounds(0, ++row, 1, 1);
+        }
+
+        return row;
+    }
+
+    public static int scanup(Color color, int width, int row, PixelsExtractor f, int tolerance) {
+        Rectangle rect = new Rectangle(0, row, width, 1);
+        while (row != 0 && PixelTools.colorMatches(color, tolerance, f.apply(rect))) {
+            rect.setBounds(0, --row, 1, 1);
+        }
+
+        return row;
     }
 }
