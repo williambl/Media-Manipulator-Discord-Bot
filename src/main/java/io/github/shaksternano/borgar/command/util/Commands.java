@@ -324,6 +324,11 @@ public class Commands {
         "Runs the garbage collector."
     ));
 
+    public static final Command<?> BENCHMARK = addCommandToRegister(new BenchmarkCommand(
+            "benchmark",
+            "Tests performance of the bot."
+    ));
+
     /**
      * The shut-down {@link Command}.
      */
