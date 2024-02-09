@@ -83,7 +83,7 @@ public class Main {
 
         avutil.av_log_set_level(avutil.AV_LOG_PANIC);
         HttpURLConnection.setFollowRedirects(false);
-        connectToPostgreSql();
+        //connectToPostgreSql();
 
         Fonts.registerFonts();
         ResourceTemplate.validate();

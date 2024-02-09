@@ -15,6 +15,8 @@ import java.awt.image.BufferedImage;
 import java.io.File;
 import java.io.IOException;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
 import java.util.function.Function;
 
 public class AutoCropCommand extends FileCommand {
@@ -56,7 +58,7 @@ public class AutoCropCommand extends FileCommand {
                 file,
                 fileFormat,
                 "cropped",
-                new CropAreaFinder(cropColor, colorTolerance),
+                new CropAreaFinder(cropColor, colorTolerance, MediaUtil.MEDIA_PROCESSING_EXECUTOR),
                 maxFileSize,
                 "Couldn't find area to crop!"
             ),
@@ -70,10 +72,12 @@ public class AutoCropCommand extends FileCommand {
         @Nullable
         private Color cropColor;
         private final int colorTolerance;
+        private final ExecutorService mediaProcessingExecutor;
 
-        private CropAreaFinder(@Nullable Color cropColor, int colorTolerance) {
+        private CropAreaFinder(@Nullable Color cropColor, int colorTolerance, ExecutorService mediaProcessingExecutor) {
             this.cropColor = cropColor;
             this.colorTolerance = colorTolerance;
+            this.mediaProcessingExecutor = mediaProcessingExecutor;
         }
 
         @Override
@@ -89,10 +93,15 @@ public class AutoCropCommand extends FileCommand {
             if (cropColor == null) {
                 cropColor = new Color(image.getRGB(0, 0), true);
             }
-            var x1 = AutocropOps.scanright(cropColor, height, width, 0, extractor, colorTolerance);
-            var x2 = AutocropOps.scanleft(cropColor, height, width - 1, extractor, colorTolerance);
-            var y1 = AutocropOps.scandown(cropColor, height, width, 0, extractor, colorTolerance);
-            var y2 = AutocropOps.scanup(cropColor, width, height - 1, extractor, colorTolerance);
+            var x1F = CompletableFuture.supplyAsync(() -> AutocropOps.scanright(cropColor, height, width, 0, extractor, colorTolerance), mediaProcessingExecutor);
+            var x2F = CompletableFuture.supplyAsync(() -> AutocropOps.scanleft(cropColor, height, width - 1, extractor, colorTolerance), mediaProcessingExecutor);
+            var y1F = CompletableFuture.supplyAsync(() -> AutocropOps.scandown(cropColor, height, width, 0, extractor, colorTolerance), mediaProcessingExecutor);
+            var y2F = CompletableFuture.supplyAsync(() -> AutocropOps.scanup(cropColor, width, height - 1, extractor, colorTolerance), mediaProcessingExecutor);
+            CompletableFuture.allOf(x1F, x2F, y1F, y2F).join();
+            var x1 = x1F.join();
+            var x2 = x2F.join();
+            var y1 = y1F.join();
+            var y2 = y2F.join();
             if (x1 == 0 && y1 == 0 && x2 == width - 1 && y2 == height - 1) {
                 return new Rectangle(0, 0, width, height);
             } else {

@@ -11,17 +11,24 @@ import io.github.shaksternano.borgar.media.io.imageprocessor.IdentityProcessor;
 import io.github.shaksternano.borgar.media.io.imageprocessor.SingleImageProcessor;
 import io.github.shaksternano.borgar.media.io.reader.MediaReader;
 import io.github.shaksternano.borgar.media.io.reader.ZippedMediaReader;
+import io.github.shaksternano.borgar.util.CompletableFutureUtil;
 import io.github.shaksternano.borgar.util.collect.MappedList;
 
 import java.awt.*;
 import java.awt.image.BufferedImage;
 import java.io.File;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.function.Function;
 import java.util.function.UnaryOperator;
 
 public class MediaUtil {
+    public static ExecutorService MEDIA_PROCESSING_EXECUTOR = Executors.newCachedThreadPool();
 
     public static File processMedia(
         File input,
@@ -129,27 +136,39 @@ public class MediaUtil {
                     )
                 ) {
                     T constantFrameDataValue = null;
+                    List<CompletableFuture<ImageFrame>> imageFrames = new ArrayList<>();
                     while (imageIterator.hasNext()) {
                         var imageFrame = imageIterator.next();
                         if (constantFrameDataValue == null) {
                             constantFrameDataValue = processor.constantData(imageFrame.content());
                         }
-                        writer.writeImageFrame(imageFrame.transform(
+                        T finalConstantFrameDataValue = constantFrameDataValue;
+                        float finalResizeRatio = resizeRatio;
+                        imageFrames.add(CompletableFutureUtil.supplyAsyncIO(() -> imageFrame.transform(
                             ImageUtil.resize(
-                                processor.transformImage(imageFrame, constantFrameDataValue),
-                                resizeRatio
+                                    processor.transformImage(imageFrame, finalConstantFrameDataValue),
+                                    finalResizeRatio
                             ),
                             processor.absoluteSpeed()
-                        ));
+                        ), MEDIA_PROCESSING_EXECUTOR));
                         if (writer.isStatic()) {
                             break;
                         }
                     }
 
+                    for (var iter = CompletableFutureUtil.joinAll(imageFrames).iterator(); iter.hasNext();) {
+                        writer.writeImageFrame(iter.next());
+                    }
+
                     if (writer.supportsAudio()) {
+                        List<CompletableFuture<AudioFrame>> audioFrames = new ArrayList<>();
                         while (audioIterator.hasNext()) {
                             var audioFrame = audioIterator.next();
-                            writer.writeAudioFrame(audioFrame.transform(processor.absoluteSpeed()));
+                            audioFrames.add(CompletableFuture.supplyAsync(() -> audioFrame.transform(processor.absoluteSpeed()), MEDIA_PROCESSING_EXECUTOR));
+                        }
+
+                        for (var iter = CompletableFutureUtil.joinAll(audioFrames).iterator(); iter.hasNext();) {
+                            writer.writeAudioFrame(iter.next());
                         }
                     }
                 }
@@ -199,6 +218,7 @@ public class MediaUtil {
                         maxFileSize,
                         finalZippedImageReader.duration())
                 ) {
+                    List<CompletableFuture<ImageFrame>> imageFrames = new ArrayList<>();
                     T constantFrameDataValue = null;
                     while (zippedImageIterator.hasNext()) {
                         var framePair = zippedImageIterator.next();
@@ -210,22 +230,33 @@ public class MediaUtil {
                         var toTransform = finalZippedImageReader.isFirstControlling()
                             ? firstFrame
                             : secondFrame;
-                        writer.writeImageFrame(toTransform.transform(
+                        float finalResizeRatio = resizeRatio;
+                        T finalConstantFrameDataValue = constantFrameDataValue;
+                        imageFrames.add(CompletableFutureUtil.supplyAsyncIO(() -> toTransform.transform(
                             ImageUtil.resize(
-                                processor.transformImage(firstFrame, secondFrame, constantFrameDataValue),
-                                resizeRatio
+                                    processor.transformImage(firstFrame, secondFrame, finalConstantFrameDataValue),
+                                    finalResizeRatio
                             ),
                             processor.absoluteSpeed()
-                        ));
+                        ), MEDIA_PROCESSING_EXECUTOR));
                         if (writer.isStatic()) {
                             break;
                         }
                     }
 
+                    for (var iter = CompletableFutureUtil.joinAll(imageFrames).iterator(); iter.hasNext();) {
+                        writer.writeImageFrame(iter.next());
+                    }
+
                     if (writer.supportsAudio()) {
+                        List<CompletableFuture<AudioFrame>> audioFrames = new ArrayList<>();
                         while (audioIterator.hasNext()) {
                             var audioFrame = audioIterator.next();
-                            writer.writeAudioFrame(audioFrame.transform(processor.absoluteSpeed()));
+                            audioFrames.add(CompletableFuture.supplyAsync(() -> audioFrame.transform(processor.absoluteSpeed()), MEDIA_PROCESSING_EXECUTOR));
+                        }
+
+                        for (var iter = CompletableFutureUtil.joinAll(audioFrames).iterator(); iter.hasNext();) {
+                            writer.writeAudioFrame(iter.next());
                         }
                     }
                 }
@@ -249,10 +280,9 @@ public class MediaUtil {
             var reader = MediaReaders.createImageReader(media, outputFormat);
             var iterator = reader.iterator()
         ) {
-            Rectangle toKeep = null;
             var width = -1;
             var height = -1;
-
+            List<CompletableFuture<Rectangle>> toKeepAreas = new ArrayList<>();
             while (iterator.hasNext()) {
                 var frame = iterator.next();
                 var image = frame.content();
@@ -261,21 +291,29 @@ public class MediaUtil {
                     height = image.getHeight();
                 }
 
-                var mayKeepArea = cropKeepAreaFinder.apply(image);
-                if ((mayKeepArea.getX() != 0
-                    || mayKeepArea.getY() != 0
-                    || mayKeepArea.getWidth() != width
-                    || mayKeepArea.getHeight() != height)
-                    && mayKeepArea.getWidth() > 0
-                    && mayKeepArea.getHeight() > 0
-                ) {
-                    if (toKeep == null) {
-                        toKeep = mayKeepArea;
-                    } else {
-                        toKeep = toKeep.union(mayKeepArea);
+                int finalWidth = width;
+                int finalHeight = height;
+                toKeepAreas.add(CompletableFuture.supplyAsync(() -> {
+                    var mayKeepArea = cropKeepAreaFinder.apply(image);
+                    if ((mayKeepArea.getX() != 0
+                            || mayKeepArea.getY() != 0
+                            || mayKeepArea.getWidth() != finalWidth
+                            || mayKeepArea.getHeight() != finalHeight)
+                            && mayKeepArea.getWidth() > 0
+                            && mayKeepArea.getHeight() > 0
+                    ) {
+                        return mayKeepArea;
                     }
-                }
+                    return null;
+                }, MEDIA_PROCESSING_EXECUTOR));
             }
+
+            CompletableFuture.allOf(toKeepAreas.toArray(CompletableFuture[]::new)).join();
+            var toKeep = toKeepAreas.stream()
+                    .map(CompletableFuture::join)
+                    .filter(Objects::nonNull)
+                    .reduce(Rectangle::union)
+                    .orElse(null);
 
             if (toKeep == null
                 || (toKeep.getX() == 0
@@ -285,16 +323,15 @@ public class MediaUtil {
             )) {
                 throw new FailedOperationException(failureMessage);
             } else {
-                var finalToKeep = toKeep;
                 return processMedia(
                     media,
                     outputFormat,
                     resultName,
                     image -> image.getSubimage(
-                        finalToKeep.x,
-                        finalToKeep.y,
-                        finalToKeep.width,
-                        finalToKeep.height
+                        toKeep.x,
+                        toKeep.y,
+                        toKeep.width,
+                        toKeep.height
                     ),
                     maxFileSize
                 );
